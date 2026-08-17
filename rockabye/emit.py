@@ -168,7 +168,7 @@ def _write_reports(
         fh.write(
             "This directory was produced by rockabye and is laid out for ROCkOut's\n"
             "filter step. Use it as the -d argument:\n\n"
-            "    python3 rockout_main.py align -d <this project> -f <filter dir> ...\n"
+            "    python3 rockout_main.py align -d <this project> -f <filter dir> -i <reads.fasta>\n"
             "    python3 rockout_main.py filter -d <this project> -f <filter dir>\n\n"
             "model/    three cutoff tables plus the positive protein alignment\n"
             "database/ positive proteins and their DIAMOND database\n\n"

@@ -63,11 +63,13 @@ rockabye build \
     -t 16
 ```
 
-Then filter a metagenome with ROCkOut itself:
+Then filter a metagenome with ROCkOut itself. Both steps have been run end to end
+against a `rockabye` model, producing passing/failing alignments, read FASTAs and
+interactive plots:
 
 ```bash
-python3 rockout_main.py align  -d my_model/ -f filter_dir/ -1 reads.fasta
-python3 rockout_main.py filter -d my_model/ -f filter_dir/
+python3 rockout_main.py align  -d my_model/ -f filter_dir/ -i reads.fasta -t 16
+python3 rockout_main.py filter -d my_model/ -f filter_dir/ --threads 16
 ```
 
 Check a model at any time — this works on any ROCkOut model, not only ones built here:

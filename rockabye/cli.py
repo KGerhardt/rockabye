@@ -353,7 +353,7 @@ def cmd_build(args) -> int:
     print(f"\nModel written to {final}")
     print(f"Mean held-out F1 across all partitions: {mean_f1:.4f}")
     print("\nUse it with ROCkOut:")
-    print(f"  python3 rockout_main.py align -d {outdir} -f <filter_dir> -1 <reads.fasta>")
+    print(f"  python3 rockout_main.py align -d {outdir} -f <filter_dir> -i <reads.fasta>")
     print(f"  python3 rockout_main.py filter -d {outdir} -f <filter_dir>")
     return 0
 
