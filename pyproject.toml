@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rockabye"
+version = "0.1.0"
+description = "Build ROCkOut-compatible read filtering models from labelled positive and negative gene sequences"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+
+[project.scripts]
+rockabye = "rockabye.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rockabye*"]

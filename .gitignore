@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# Test / run artefacts
+test_data/
+*.dmnd
+*.tsv
+!tests/**/*.tsv
