@@ -33,8 +33,10 @@ conda install -c bioconda diamond bbmap muscle
 | BBMap (`randomreads.sh`) | read simulation. ROCkOut's simulator, called with its parameters |
 | MUSCLE or MAFFT | aligning the positive proteins (skippable, see below) |
 
-ART is supported as an alternative simulator (`--simulator art`), but BBMap is
-strongly preferred — see [How background reads get labelled](#how-background-reads-get-labelled).
+BBMap is the only supported simulator. It is not merely a default: background reads
+are labelled using the per-read contig coordinates BBMap reports, and a simulator
+that does not report them cannot label them correctly — see
+[How background reads get labelled](#how-background-reads-get-labelled).
 
 ## Usage
 
@@ -113,7 +115,6 @@ the project and contain no `;`.
 | `--background-target-identity` | `90.0` | identity at which a background region counts as a copy of a positive gene. Lower it if your genomes are divergent from your positive sequences |
 | `--coverage` | `20` | coverage for the positive and confounder genes |
 | `--read-lengths` | `100 150 250 300` | nominal lengths, ±10% jitter |
-| `--simulator` | `bbmap` | or `art` |
 | `--snp-rate` | `0.01` | indel rates default to this ÷ 19, as ROCkOut does |
 | `--splits` | `5` | cross-validation partitions |
 | `--train-fraction` | `0.75` | fraction of *sequences* (not reads) used to train |
@@ -210,9 +211,10 @@ end. Train against them by mistake and the identity/alignment classifier turns t
 strict: refitting ROCkOut's reads with exactly that error raises FNR from 0.35% to
 6.34%.
 
-ART reports no read coordinates, so `--simulator art` falls back to a blunt read-level
-identity screen (`--background-max-identity`) that discards suspected target reads
-instead of labelling them. Prefer BBMap.
+This is why BBMap is the only supported simulator: step 2 needs per-read coordinates.
+A simulator that reports only which contig a read came from forces a fallback — screen
+reads by identity and discard the suspects — which throws away exactly the boundary
+reads the model needs, and mislabels the ones it keeps.
 
 ## What the model is
 

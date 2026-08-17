@@ -1,10 +1,14 @@
 """Read simulation, delegated entirely to established CLI simulators.
 
-There is no in-house simulator: BBMap and ART already model fragment sampling and
+There is no in-house simulator: BBMap already models fragment sampling and
 sequencing error properly, and reimplementing that badly is the fastest way to
-build a model on reads that do not resemble data. BBMap is the default because it
-is what ROCkOut itself calls, with the same parameters, so a rockabye run and a
+build a model on reads that do not resemble data. BBMap is also what ROCkOut itself
+calls, and it is invoked here with the same parameters, so a rockabye run and a
 ROCkOut run see the same kind of reads.
+
+The adapter indirection below is kept deliberately: a second backend needs only a
+`command()` and the two read-name parsers. It must report per-read contig
+coordinates, though -- without them background reads cannot be labelled correctly.
 
 Reads are streamed straight to disk as they are produced. Deep genomic background
 runs generate tens of millions of reads, which must never be held in memory.
@@ -35,7 +39,7 @@ DEFAULT_READ_LENGTHS = (100, 150, 250, 300)
 # relationship means a matching --snp-rate reproduces its error model exactly.
 INDEL_RATE_DIVISOR = 19
 
-SIMULATORS = ("bbmap", "art")
+SIMULATORS = ("bbmap",)
 
 
 @dataclass
@@ -48,7 +52,6 @@ class SimConfig:
     deletion_rate: Optional[float] = None
     seed: int = 1337
     simulator: str = "bbmap"
-    art_profile: str = "HS25"
     background_coverage: float = 10.0
 
     def indel_rates(self) -> Tuple[float, float]:
@@ -101,7 +104,6 @@ class _BBMap:
 
     name = "bbmap"
     executable = "randomreads.sh"
-    supports_coordinates = True
 
     def __init__(self, cfg: SimConfig, exe: str):
         self.cfg = cfg
@@ -151,58 +153,19 @@ class _BBMap:
             return None
 
 
-class _ART:
-    """ART Illumina. Produces fixed-length reads, so --length-jitter is ignored.
-
-    Read names are '{reference_name}-{n}'.
-    """
-
-    name = "art"
-    executable = "art_illumina"
-    supports_coordinates = False
-
-    def __init__(self, cfg: SimConfig, exe: str):
-        self.cfg = cfg
-        self.exe = exe
-
-    def command(self, ref: str, out: str, read_length: int, coverage: float,
-                seed: int, workdir: str) -> list:
-        return [
-            self.exe,
-            "-ss", self.cfg.art_profile,
-            "-i", ref,
-            "-l", str(read_length),
-            "-f", str(coverage),
-            "-o", out[: -len(".fq")] if out.endswith(".fq") else out,
-            "-na",
-            "-rs", str(seed),
-        ]
-
-    @staticmethod
-    def source_of(read_name: str, known: set) -> Optional[str]:
-        if "-" in read_name:
-            return read_name.rsplit("-", 1)[0]
-        return None
-
-    @staticmethod
-    def read_coords(read_name: str) -> Optional[Tuple[int, int]]:
-        return None
-
-
 def get_simulator(cfg: SimConfig):
     if cfg.simulator not in SIMULATORS:
         raise ValueError(
             f"unknown simulator {cfg.simulator!r}; choose from {', '.join(SIMULATORS)}"
         )
-    cls = _BBMap if cfg.simulator == "bbmap" else _ART
+    cls = _BBMap
     exe = shutil.which(cls.executable)
     if exe is None:
         raise FileNotFoundError(
-            f"--simulator {cfg.simulator} requires {cls.executable!r} on PATH.\n"
-            f"  install BBMap:  conda install -c bioconda bbmap\n"
-            f"  install ART:    conda install -c bioconda art\n"
-            "rockabye has no built-in simulator by design; read simulation is "
-            "delegated to tools that model sequencing error properly."
+            f"read simulation requires {cls.executable!r} (BBMap) on PATH.\n"
+            "  conda install -c bioconda bbmap\n"
+            "rockabye has no built-in simulator by design; simulation is delegated "
+            "to a tool that models sequencing error properly."
         )
     return cls(cfg, exe)
 
@@ -253,7 +216,6 @@ def _simulate_group(
                 f"length {read_length}:\n{proc.stderr[-3000:]}"
             )
         if not os.path.exists(produced):
-            # ART appends its own suffix.
             alternatives = [
                 os.path.join(tmp, f) for f in os.listdir(tmp)
                 if f.endswith((".fq", ".fastq", ".fa"))

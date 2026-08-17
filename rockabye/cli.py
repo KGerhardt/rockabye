@@ -28,7 +28,6 @@ from .project import load_inputs
 from .refine import refine
 from .simulate import (
     DEFAULT_READ_LENGTHS,
-    SIMULATORS,
     SimConfig,
     get_simulator,
     simulate_all,
@@ -87,14 +86,6 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: %(default)s)"
         ),
     )
-    b.add_argument(
-        "--background-max-identity", type=float, default=90.0,
-        help=(
-            "fallback used only when the simulator reports no read coordinates "
-            "(ART): background reads aligning above this identity over at least half "
-            "their length are dropped instead (default: %(default)s)"
-        ),
-    )
     b.add_argument("-t", "--threads", type=int, default=1)
     b.add_argument(
         "--read-lengths",
@@ -104,14 +95,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="nominal read lengths to simulate (default: %(default)s)",
     )
     b.add_argument("--coverage", type=float, default=20.0)
-    b.add_argument(
-        "--simulator", choices=SIMULATORS, default="bbmap",
-        help=(
-            "read simulator to delegate to (default: %(default)s, which is what "
-            "ROCkOut uses and is invoked with the same parameters)"
-        ),
-    )
-    b.add_argument("--art-profile", default="HS25", help="ART error profile, e.g. HS25, MSv3")
     b.add_argument("--snp-rate", type=float, default=0.01)
     b.add_argument(
         "--insertion-rate", type=float, default=None,
@@ -123,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     b.add_argument(
         "--length-jitter", type=float, default=0.10,
-        help="read length varies by +/- this fraction (bbmap only; ART is fixed-length)",
+        help="read length varies by +/- this fraction",
     )
     b.add_argument("--aligner", choices=("auto", "muscle", "mafft"), default="auto")
     b.add_argument("--diamond", default=None, help="path to the diamond binary")
@@ -172,28 +155,6 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def screen_background(aln: Alignments, max_identity: float, active: bool = True):
-    """Reclassify background reads as confounders, dropping likely true positives.
-
-    A background contig may legitimately contain the target gene -- a positive
-    genome is a perfectly good source of background -- so a read that aligns at
-    high identity over most of its length is far more likely to be a real copy of
-    the target than a confounder. Trusting it would poison the confounder set.
-    """
-    is_bg = aln.label == "Background"
-    if not is_bg.any():
-        return aln, 0
-    if not active:
-        aln.label = np.where(is_bg, "Negative", aln.label)
-        return aln, 0
-
-    looks_positive = is_bg & (aln.pct_id >= max_identity) & (aln.pct_aln >= 50.0)
-    keep = ~looks_positive
-    aln = aln.subset(np.flatnonzero(keep))
-    aln.label = np.where(aln.label == "Background", "Negative", aln.label)
-    return aln, int(looks_positive.sum())
-
-
 def cmd_build(args) -> int:
     log = _log(not args.quiet)
 
@@ -208,11 +169,10 @@ def cmd_build(args) -> int:
         insertion_rate=args.insertion_rate,
         deletion_rate=args.deletion_rate,
         seed=args.seed,
-        simulator=args.simulator,
-        art_profile=args.art_profile,
         background_coverage=args.background_coverage,
     )
-    sim = get_simulator(sim_cfg)
+    # Fail now rather than after minutes of alignment work.
+    get_simulator(sim_cfg)
 
     outdir = os.path.abspath(args.output)
     work = os.path.join(outdir, "intermediates")
@@ -253,32 +213,25 @@ def cmd_build(args) -> int:
 
     target_regions = None
     if inputs.background_nt:
-        if sim.supports_coordinates:
-            log("locating positive-gene copies inside the background contigs")
-            bg_path = os.path.join(work, "background_contigs.fasta")
-            write_fasta(bg_path, inputs.background_nt)
-            target_regions = find_target_regions(
-                diamond, bg_path, db,
-                min_identity=args.background_target_identity,
-                threads=args.threads,
-                workdir=work,
-            )
-            n_regions = sum(len(v) for v in target_regions.values())
+        log("locating positive-gene copies inside the background contigs")
+        bg_path = os.path.join(work, "background_contigs.fasta")
+        write_fasta(bg_path, inputs.background_nt)
+        target_regions = find_target_regions(
+            diamond, bg_path, db,
+            min_identity=args.background_target_identity,
+            threads=args.threads,
+            workdir=work,
+        )
+        n_regions = sum(len(v) for v in target_regions.values())
+        log(
+            f"  found {n_regions} target region(s) across "
+            f"{len(target_regions)} contig(s); reads overlapping them will be "
+            "labelled positive rather than trained against"
+        )
+        if not target_regions:
             log(
-                f"  found {n_regions} target region(s) across "
-                f"{len(target_regions)} contig(s); reads overlapping them will be "
-                "labelled positive rather than trained against"
-            )
-            if not target_regions:
-                log(
-                    "  none found -- if your background genomes do contain the "
-                    "target, lower --background-target-identity"
-                )
-        else:
-            log(
-                f"  note: {args.simulator} reports no read coordinates, so background "
-                "reads are screened by identity instead. This mislabels reads that "
-                "only partially overlap a target gene; prefer --simulator bbmap."
+                "  none found -- if your background genomes do contain the "
+                "target, lower --background-target-identity"
             )
 
     log("simulating reads")
@@ -297,16 +250,10 @@ def cmd_build(args) -> int:
             threads=args.threads, sensitivity=args.sensitivity, evalue=args.evalue,
         )
         aln = load_alignments(tsv, valid_targets, rng)
-        # Coordinate labelling already resolved every background read, so the
-        # identity screen is only a fallback for simulators without coordinates.
-        aln, n_dropped = screen_background(
-            aln, args.background_max_identity, active=target_regions is None
-        )
-        if n_dropped:
-            log(
-                f"  read length {rl}: dropped {n_dropped:,} background reads that look "
-                f"like genuine target-gene copies"
-            )
+        # Simulation already resolved every background read by coordinate overlap:
+        # those hitting a target gene copy were labelled positive there, so whatever
+        # still carries the Background tag is a confounder.
+        aln.label = np.where(aln.label == "Background", "Negative", aln.label)
         n_pos = int(np.sum(aln.label == "Positive"))
         datasets[rl] = aln
         log(
@@ -335,7 +282,7 @@ def cmd_build(args) -> int:
     log("writing model")
     metadata = {
         "rockabye_version": __version__,
-        "simulator": args.simulator,
+        "simulator": "bbmap",
         "coverage": args.coverage,
         "cutoff_bias": args.cutoff_bias,
         "compat": args.compat,
