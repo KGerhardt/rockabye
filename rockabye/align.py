@@ -177,9 +177,19 @@ def _merge_intervals(intervals: list) -> list:
 
 
 def load_alignments(path: str, valid_targets: set, rng: np.random.Generator) -> Alignments:
-    """Parse a DIAMOND table, keep best hit per read, derive pct_aln and labels."""
-    read_id, target = [], []
-    pct_id, aln_len, sstart, send, bitscore, qlen = [], [], [], [], [], []
+    """Parse a DIAMOND table, keep the best hit per read, derive pct_aln and labels.
+
+    Best-hit selection happens *while streaming*, so peak memory is proportional to
+    the number of distinct reads rather than to the number of alignments. That
+    distinction matters: ROCkOut runs DIAMOND with `--max-target-seqs 0`, so with a
+    few hundred similar positive proteins each read produces on the order of 150
+    alignments and the table reaches millions of rows.
+
+    Ties on bitscore are broken uniformly at random via reservoir sampling, which
+    needs only a running count per read.
+    """
+    best: dict = {}
+    tie_counts: dict = {}
 
     with open(path) as fh:
         for line in fh:
@@ -188,70 +198,65 @@ def load_alignments(path: str, valid_targets: set, rng: np.random.Generator) -> 
             f = line.rstrip("\n").split("\t")
             if f[1] not in valid_targets:
                 continue
-            read_id.append(f[0])
-            target.append(f[1])
-            pct_id.append(float(f[2]))
-            aln_len.append(int(f[3]))
-            sstart.append(int(f[8]))
-            send.append(int(f[9]))
-            bitscore.append(float(f[11]))
-            qlen.append(int(f[12]))
+            read = f[0]
+            score = float(f[11])
+            current = best.get(read)
+            if current is None or score > current[5]:
+                best[read] = (f[1], float(f[2]), int(f[3]), int(f[8]), int(f[9]),
+                              score, int(f[12]))
+                tie_counts[read] = 1
+            elif score == current[5]:
+                tie_counts[read] += 1
+                if rng.random() < 1.0 / tie_counts[read]:
+                    best[read] = (f[1], float(f[2]), int(f[3]), int(f[8]), int(f[9]),
+                                  score, int(f[12]))
 
-    if not read_id:
+    if not best:
         raise ValueError(
             f"no usable alignments in {path}. Either DIAMOND found nothing (check "
             "that positives and negatives are actually homologous) or every subject "
             "name was absent from the alignment."
         )
 
-    read_id = np.array(read_id)
-    aln = Alignments(
-        read_id=read_id,
-        target=np.array(target),
-        pct_id=np.array(pct_id, dtype=np.float64),
-        aln_len=np.array(aln_len, dtype=np.int32),
-        sstart=np.array(sstart, dtype=np.int32),
-        send=np.array(send, dtype=np.int32),
-        bitscore=np.array(bitscore, dtype=np.float64),
-        qlen=np.array(qlen, dtype=np.int32),
-        pct_aln=np.zeros(read_id.size, dtype=np.float64),
-        label=np.empty(read_id.size, dtype=object),
-        source=np.empty(read_id.size, dtype=object),
-    )
+    reads = list(best)
+    n = len(reads)
+    target = np.empty(n, dtype=object)
+    pct_id = np.empty(n, dtype=np.float64)
+    aln_len = np.empty(n, dtype=np.int32)
+    sstart = np.empty(n, dtype=np.int32)
+    send = np.empty(n, dtype=np.int32)
+    bitscore = np.empty(n, dtype=np.float64)
+    qlen = np.empty(n, dtype=np.int32)
+    label = np.empty(n, dtype=object)
+    source = np.empty(n, dtype=object)
+
+    for i, read in enumerate(reads):
+        t, pid, alen, ss, se, bs, ql = best[read]
+        target[i] = t
+        pct_id[i] = pid
+        aln_len[i] = alen
+        sstart[i] = ss
+        send[i] = se
+        bitscore[i] = bs
+        qlen[i] = ql
+        src, _, lab = parse_defline(read)
+        label[i] = lab
+        source[i] = src
 
     # Identical to rocker_filter.load_reads: alignment length over translated
     # query length.
-    aln.pct_aln = np.round(100.0 * aln.aln_len / (aln.qlen / 3.0), 2)
+    pct_aln = np.round(100.0 * aln_len / (qlen / 3.0), 2)
 
-    labels, sources = [], []
-    for name in aln.read_id:
-        src, _, label = parse_defline(name)
-        labels.append(label)
-        sources.append(src)
-    aln.label = np.array(labels)
-    aln.source = np.array(sources)
-
-    return best_hits(aln, rng)
-
-
-def best_hits(aln: Alignments, rng: np.random.Generator) -> Alignments:
-    """Keep the max-bitscore alignment per read, breaking ties at random."""
-    order = np.lexsort((-aln.bitscore, aln.read_id))
-    sorted_reads = aln.read_id[order]
-    sorted_bits = aln.bitscore[order]
-
-    # Group boundaries in the read-sorted array.
-    starts = np.flatnonzero(
-        np.concatenate(([True], sorted_reads[1:] != sorted_reads[:-1]))
+    return Alignments(
+        read_id=np.array(reads),
+        target=target.astype(str),
+        pct_id=pct_id,
+        aln_len=aln_len,
+        sstart=sstart,
+        send=send,
+        bitscore=bitscore,
+        qlen=qlen,
+        pct_aln=pct_aln,
+        label=label.astype(str),
+        source=source.astype(str),
     )
-    ends = np.concatenate((starts[1:], [sorted_reads.size]))
-
-    chosen = np.empty(starts.size, dtype=np.int64)
-    for i, (s, e) in enumerate(zip(starts, ends)):
-        top = sorted_bits[s]
-        n_tied = int(np.searchsorted(-sorted_bits[s:e], -top, side="right"))
-        chosen[i] = s if n_tied <= 1 else s + int(rng.integers(0, n_tied))
-
-    keep = order[chosen]
-    keep.sort()
-    return aln.subset(keep)

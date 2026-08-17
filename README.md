@@ -96,6 +96,23 @@ in `blastx`. The depth is not optional — only about 1 background read in 10⁵
 all, so shallow background yields too few confounders to constrain anything. A model is
 built once and reused.
 
+Measured runs, for calibration:
+
+| inputs | wall clock | peak RSS | disk for intermediates |
+|---|---|---|---|
+| 12 positives, 12 confounders, no background | ~12 s | 65 MB | small |
+| 200 positives, 200 confounders, no background | ~3.5 min | 440 MB | 2.3 GB |
+| 5 positives, 34 confounders, 64 Mbp background at 10x | ~15 min | ~1 GB | ~3 GB |
+
+Intermediates are deleted at the end unless you pass `--keep-intermediates`, but they
+exist during the run, so make sure `-o` has room. Note that many positive sequences
+means many alignments per read (DIAMOND is run with `--max-target-seqs 0`, as ROCkOut
+does): 200 positives produced 28 million alignment rows, reduced to 172,000 best hits
+while streaming.
+
+Building into a directory that already holds a model is refused unless you pass
+`--force`.
+
 ### Optional inputs
 
 Drop these into `positives/` to skip a step:
@@ -122,6 +139,7 @@ the project and contain no `;`.
 | `--compat` | `hardened` | closes a lookup wrap in ROCkOut's filter; `rockout` reproduces its binning bit-for-bit |
 | `--seed` | `1337` | the pipeline is deterministic given a seed |
 | `--threads` | `1` | |
+| `--force` | off | overwrite an existing model in `-o` (refused otherwise) |
 
 `--cutoff-bias` chooses among thresholds that score identically under Youden's J:
 `strongly_favor_false_negatives` is strictest, `strongly_favor_false_positives` most
@@ -352,3 +370,7 @@ python3 tests/evaluate_on_cached_reads.py <project> /tmp/rebuilt
 `test_rockout_interop.py` is the one that proves compatibility: it imports
 ROCkOut's real `rocker_filter.py` and runs its loading and classification path
 unmodified.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

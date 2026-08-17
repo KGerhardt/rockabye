@@ -35,6 +35,11 @@ from .simulate import (
 from .youden import BIAS_CHOICES
 
 
+def warn(msg: str) -> None:
+    """Always shown: a warning suppressed by --quiet is not a warning."""
+    print(f"warning: {msg}", file=sys.stderr, flush=True)
+
+
 def _log(verbose: bool):
     start = time.time()
 
@@ -92,7 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         nargs="+",
         default=list(DEFAULT_READ_LENGTHS),
-        help="nominal read lengths to simulate (default: %(default)s)",
+        help=(
+            "nominal read lengths to simulate. The default is ROCkOut's set and is "
+            "what the model format expects; thresholds are interpolated between "
+            "them, so fewer lengths means a model that cannot adapt to read length "
+            "(default: %(default)s)"
+        ),
     )
     b.add_argument("--coverage", type=float, default=20.0)
     b.add_argument("--snp-rate", type=float, default=0.01)
@@ -144,6 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     b.add_argument("--seed", type=int, default=1337)
+    b.add_argument(
+        "--force", action="store_true",
+        help="overwrite an existing model in the output directory",
+    )
     b.add_argument("--keep-intermediates", action="store_true")
     b.add_argument("-q", "--quiet", action="store_true")
 
@@ -162,7 +176,7 @@ def cmd_build(args) -> int:
     diamond = require_diamond(args.diamond)
     log(f"using DIAMOND at {diamond}")
     sim_cfg = SimConfig(
-        read_lengths=tuple(args.read_lengths),
+        read_lengths=tuple(sorted(set(args.read_lengths))),
         coverage=args.coverage,
         length_jitter=args.length_jitter,
         snp_rate=args.snp_rate,
@@ -174,7 +188,29 @@ def cmd_build(args) -> int:
     # Fail now rather than after minutes of alignment work.
     get_simulator(sim_cfg)
 
+    read_lengths = sorted(set(args.read_lengths))
+    if len(read_lengths) < len(DEFAULT_READ_LENGTHS):
+        warn(
+            f"building with read lengths {read_lengths} instead of ROCkOut's "
+            f"{list(DEFAULT_READ_LENGTHS)}. Cutoffs are interpolated between trained "
+            "lengths and clamped outside them, so a metagenome whose reads differ "
+            "from these will be scored against the nearest trained length. Use the "
+            "default unless you have a specific reason."
+        )
+    if len(read_lengths) == 1:
+        warn(
+            "a single read length gives every read the same cutoffs regardless of "
+            "its length. This is not a configuration ROCkOut supports."
+        )
+
     outdir = os.path.abspath(args.output)
+    existing = os.path.join(outdir, "final_outputs", "model")
+    if os.path.isdir(existing) and not args.force:
+        raise ValueError(
+            f"{outdir} already contains a model ({existing}). Building would "
+            "overwrite it -- a background run can take a long time to redo. "
+            "Pass --force to replace it, or choose another -o directory."
+        )
     work = os.path.join(outdir, "intermediates")
     os.makedirs(work, exist_ok=True)
 
@@ -187,9 +223,11 @@ def cmd_build(args) -> int:
     if inputs.n_background:
         log(f"  {inputs.n_background} background contigs at {args.background_coverage}x")
     else:
-        log(
-            "  no --background supplied; confounders come only from the negatives "
-            "directory. See the README on genomic background and false positives."
+        warn(
+            "no --background supplied, so confounders come only from the negatives "
+            "directory. Measured on ROCkOut's own data this raises the false "
+            "positive rate from ~0.1% to ~21%. See the README section on genomic "
+            "background."
         )
     if inputs.n_positive < args.splits:
         log(
