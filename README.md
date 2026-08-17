@@ -1,5 +1,8 @@
 # rockabye
 
+[![CI](https://github.com/KGerhardt/rockabye/actions/workflows/ci.yml/badge.svg)](https://github.com/KGerhardt/rockabye/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Build [ROCkOut](https://github.com/KGerhardt/ROCkOut)-compatible read filtering models
 from sequences you have already labelled.
 
