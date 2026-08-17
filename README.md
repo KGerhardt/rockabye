@@ -349,6 +349,11 @@ Replicated deliberately, because each affects the output:
 
 ## Tests
 
+The first group is self-contained and is what CI runs. The rest deliberately need
+real ROCkOut material — a checkout for `rocker_filter.py`, and completed project
+directories for their cached reads and shipped curves — because their whole purpose
+is to check this tool against the original rather than against itself.
+
 ```bash
 python3 tests/test_units.py                     # numeric core
 python3 tests/make_test_data.py /tmp/td          # synthetic family, shared domain
@@ -360,7 +365,8 @@ python3 tests/test_rockout_interop.py \
     /path/to/ROCkOut/modules/rocker_filter.py \
     /tmp/proj $(which diamond) /tmp/td/positives /tmp/td/negatives /tmp/interop
 
-# compare against real ROCkOut projects
+# compare against real ROCkOut projects (needs completed projects with
+# final_outputs/reads/ — this is what produces the fidelity table above)
 python3 tests/compare_to_rockout.py /path/to/a/rockout/project
 tests/compare_all.sh /path/to/dir/of/rockout/projects
 
