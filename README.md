@@ -9,9 +9,10 @@ from sequences you have already labelled.
 ROCkOut works out its own labels: it downloads genomes from UniProt and decides a read
 is positive only if it falls inside the target gene's coordinates. `rockabye` takes the
 labels as given — you supply target genes, confounder genes, and the genomes they live
-in. That drops the download, snapshot, and phylogenetic-placement machinery while
-keeping the part that produces a filter, and the output loads directly into
-`rockout_main.py filter`.
+in. That drops the download and snapshot machinery while keeping the part that
+produces a filter, and the output loads directly into `rockout_main.py filter`.
+Phylogenetic placement is kept as two standalone commands that work on any set of
+sequences ([below](#phylogenetic-placement)).
 
 The thresholding is a faithful reimplementation, verified bin-exact against 15 real
 ROCkOut projects covering 5.8 million alignments ([details](#fidelity-vs-rockout)).
@@ -35,6 +36,13 @@ conda install -c bioconda diamond bbmap muscle
 | DIAMOND | translated alignment — the model's axes are `blastx` bitscore and identity |
 | BBMap (`randomreads.sh`) | read simulation. ROCkOut's simulator, called with its parameters |
 | MUSCLE or MAFFT | aligning the positive proteins (skippable, see below) |
+
+Phylogenetic placement (`rockabye refpkg` / `rockabye place`, [below](#phylogenetic-placement))
+needs its own tools, and `build` does not:
+
+```bash
+conda install -c bioconda muscle fasttree mafft pplacer taxtastic
+```
 
 BBMap is the only supported simulator. It is not merely a default: background reads
 are labelled using the per-read contig coordinates BBMap reports, and a simulator
@@ -149,6 +157,122 @@ the project and contain no `;`.
 `--cutoff-bias` chooses among thresholds that score identically under Youden's J:
 `strongly_favor_false_negatives` is strictest, `strongly_favor_false_positives` most
 permissive, with `favor_*` variants at the quartiles.
+
+## Phylogenetic placement
+
+Two standalone commands build a pplacer reference package from any set of sequences
+and place reads onto it. They are independent of `build`: use them on a model's
+positives, on a broader reference set, or on sequences that never went near a model,
+before or after a build.
+
+```bash
+# any FASTA files or directories of them; nucleotide or protein, not mixed
+rockabye refpkg positives/ more_references.fna -o phylo/ --name nirk -t 16
+
+# e.g. the reads ROCkOut's filter passed
+rockabye place -c phylo/reference_package/nirk.refpkg \
+    filter_dir/ROCkOut_passing_read_fastas/ -o placements/ -t 16
+```
+
+### Usage
+
+**Build, filter, then place what passed.** The usual end-to-end route: a rockabye
+model, ROCkOut's filter, and a tree to see where the passing reads fall.
+
+```bash
+rockabye build -p positives/ -n negatives/ --background genomes/ -o nirk_model/ -t 16
+python3 rockout_main.py align  -d nirk_model/ -f filter_dir/ -i reads.fasta -t 16
+python3 rockout_main.py filter -d nirk_model/ -f filter_dir/ --threads 16
+
+rockabye refpkg positives/ -o nirk_phylo/ --name nirk -t 16
+rockabye place -c nirk_phylo/reference_package/nirk.refpkg \
+    filter_dir/ROCkOut_passing_read_fastas/ -o nirk_placements/ -t 16
+```
+
+**Place against a wider tree than the model.** The reference set does not have to
+match the model's positives. Including the confounders shows whether reads that
+passed sit among the targets or drift towards their relatives:
+
+```bash
+rockabye refpkg positives/ negatives/ -o both_phylo/ --name targets_and_confounders -t 16
+```
+
+This is ROCkOut's `-g both` package, and `negatives/` alone gives its `-g negative`
+one. Unlike ROCkOut's, these packages exist only if you ask for them.
+
+**Reuse an alignment you trust.** Skips MUSCLE, which dominates the runtime. Any
+aligned FASTA works, including rockabye's own protein alignment from a build:
+
+```bash
+rockabye refpkg --alignment curated_nt_alignment.afa -o phylo/ --name nirk
+rockabye refpkg --alignment nirk_model/final_outputs/model/complete_multiple_alignment_aa.fasta \
+    -o nirk_aa_phylo/ --name nirk_aa
+```
+
+A protein package needs protein reads; `place` refuses nucleotide reads against it.
+
+**Place any reads, several files at once.** Files and directories mix freely, and
+each file gets its own alignment, jplace and TSV, named after the file:
+
+```bash
+rockabye place -c phylo/reference_package/nirk.refpkg \
+    sample_A.fasta sample_B.fasta more_samples/ -o placements/ -t 16
+```
+
+**Keep more than the best placement.** `-p` keeps up to that many placements per
+read, each with its likelihood weight ratio in the TSV:
+
+```bash
+rockabye place -c phylo/reference_package/nirk.refpkg reads.fasta -o placements/ -p 5
+```
+
+**Reproduce ROCkOut's placements.** For comparison with existing ROCkOut results
+only; see the table below for why it is not the default:
+
+```bash
+rockabye place -c phylo/reference_package/nirk.refpkg reads.fasta -o rockout_like/ --mafft-mode add
+```
+
+**Re-running.** Both commands refuse to overwrite existing output; pass `--force`
+to replace it, or use another `-o` or `--name`. Tools not on `PATH` can be given
+directly: `--muscle`, `--fasttree`, `--taxit`, `--mafft`, `--pplacer`, `--guppy`.
+
+### How it works
+
+`refpkg` is ROCkOut's reference-package step: MUSCLE 5 alignment, a FastTree tree
+(`-nt -gtr` as ROCkOut, or FastTree's JTT+CAT default for protein), packaged with
+`taxit create`. Pass `--alignment` to supply your own alignment and skip MUSCLE,
+which is most of the runtime — MUSCLE 5 took 7.5 of the 7.6 minutes for 121 nirK
+genes. Reference names may not contain Newick syntax (`():;,[]'`); this is checked
+up front rather than left to corrupt the tree.
+
+`place` writes one set of outputs per reads file:
+
+| | |
+|---|---|
+| `read_multiple_alignments/<name>_multiple_alignment.fasta` | reads added to the reference alignment |
+| `pplacer_jplace/<name>.jplace` | pplacer output (`--discard-nonoverlapped`, `--keep-at-most` from `-p`, default 1) |
+| `pplacer_tsv/<name>.jplace.tsv` | `guppy to_csv`, as TSV |
+
+**One deliberate difference from ROCkOut.** ROCkOut adds reads with `mafft --add`,
+which aligns each read as if it were a full-length sequence in the references'
+orientation. Metagenomic reads are neither. `place` defaults to
+`mafft --addfragments --adjustdirection` instead, measured on 1,000 of ROCkOut's own
+nirK passing reads, scored against the gene each read was simulated from:
+
+| `--mafft-mode` | on source gene's edge | pendant length at pplacer's ceiling (fits nowhere) | mafft time |
+|---|---|---|---|
+| `add` (ROCkOut) | 32% | 63% | 4 s |
+| `fragments` (default) | **77%** | **7%** | 29 s |
+
+Both halves matter: `--adjustdirection` alone reached 45%, `--addfragments` alone
+42%. Reads that mafft reverse-complements are renamed `_R_<name>` by mafft; the
+original names are restored before pplacer, so every output joins back to your
+input IDs.
+
+Unlike ROCkOut's `place`, every step is checked. ROCkOut ran them through
+`os.system`, so a missing `taxit` silently left an empty `reference_package/` —
+7 of the 14 on hand were empty — and `place` then failed with an `IndexError`.
 
 ## Results
 
@@ -361,6 +485,7 @@ python3 tests/test_units.py                     # numeric core
 python3 tests/make_test_data.py /tmp/td          # synthetic family, shared domain
 rockabye build -p /tmp/td/positives -n /tmp/td/negatives -o /tmp/proj
 rockabye validate /tmp/proj
+python3 tests/test_placement.py /tmp/td/positives /tmp/tp   # refpkg + place, scored
 
 # load the model with ROCkOut's real filter code and classify fresh reads
 python3 tests/test_rockout_interop.py \

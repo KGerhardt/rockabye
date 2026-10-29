@@ -20,6 +20,12 @@ from rockabye.align import Alignments, _merge_intervals  # noqa: E402
 from rockabye.simulate import _BBMap, _overlaps  # noqa: E402
 from rockabye.fasta import reverse_complement, translate  # noqa: E402
 from rockabye.msa import compute_offsets  # noqa: E402
+from rockabye.placement import (  # noqa: E402
+    _restore_read_names,
+    check_names,
+    combine_sequences,
+    guppy_csv_to_tsv,
+)
 from rockabye.refine import REJECT_ALL, CutoffSet, combine  # noqa: E402
 from rockabye.youden import windowed_max, youden_cutoff_indices  # noqa: E402
 
@@ -235,6 +241,47 @@ def test_zero_weights():
     out = combine([cs(10.0), cs(20.0)], np.array([0.0, 0.0]))
     check("all-zero F1 weights fall back to a plain mean",
           abs(out.bitscore_vs_ma[0] - 15.0) < 1e-9, f"got {out.bitscore_vs_ma[0]}")
+
+
+def test_placement_helpers():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        raw, out = os.path.join(d, "raw.fa"), os.path.join(d, "out.fa")
+        with open(raw, "w") as fh:
+            fh.write(">ref1\nAC\n>_R_read1\nGT\n>read2\nAA\n>_R_ref2\nCC\n")
+        n = _restore_read_names(raw, out, {"read1", "read2"})
+        heads = [ln.strip() for ln in open(out) if ln.startswith(">")]
+        check("mafft _R_ prefix stripped from reversed reads only",
+              heads == [">ref1", ">read1", ">read2", ">_R_ref2"] and n == 1, f"got {heads}, {n}")
+
+        csv_path, tsv_path = os.path.join(d, "g.csv"), os.path.join(d, "g.tsv")
+        with open(csv_path, "w") as fh:
+            fh.write('origin,name,edge_num\nx,"a,b",3\nx,c,4\n')
+        rows = guppy_csv_to_tsv(csv_path, tsv_path)
+        lines = open(tsv_path).read().splitlines()
+        check("guppy CSV keeps a quoted comma inside one TSV field",
+              rows == 2 and lines[1].split("\t") == ["x", "a,b", "3"], f"got {lines}")
+
+        a, b = os.path.join(d, "a.fa"), os.path.join(d, "b.fa")
+        for path in (a, b):
+            with open(path, "w") as fh:
+                fh.write(">dup\nAC-GT\n")
+        try:
+            combine_sequences([a, b])
+            check("duplicate IDs across reference files are refused", False)
+        except ValueError:
+            check("duplicate IDs across reference files are refused", True)
+        check("gaps are stripped from reference inputs", combine_sequences([a]) == {"dup": "ACGT"})
+
+    for bad in ("a:b", "a(b", "a,b", "a;b"):
+        try:
+            check_names([bad], "test")
+            check(f"Newick metacharacter in {bad!r} refused", False)
+        except ValueError:
+            check(f"Newick metacharacter in {bad!r} refused", True)
+    check_names(["UNIPROT__D1CH29_THET1__CP001826.587", "a|b"], "test")
+    check("ordinary reference names accepted", True)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,8 @@ jobs:
           rockabye --version
           rockabye build --help > /dev/null
           rockabye validate --help > /dev/null
+          rockabye refpkg --help > /dev/null
+          rockabye place --help > /dev/null
 
   end-to-end:
     runs-on: ubuntu-latest
@@ -55,6 +57,10 @@ jobs:
             diamond
             bbmap
             muscle
+            fasttree
+            mafft
+            pplacer
+            taxtastic
             pandas
           condarc: |
             channels:
@@ -75,6 +81,10 @@ jobs:
           python tests/make_test_data.py /tmp/td
           rockabye build -p /tmp/td/positives -n /tmp/td/negatives -o /tmp/proj -t 2
           rockabye validate /tmp/proj
+
+      - name: Build a reference package and place reads of known origin
+        shell: bash -el {0}
+        run: python tests/test_placement.py /tmp/td/positives /tmp/tp
 
       - name: Load the model with ROCkOut's own filter
         shell: bash -el {0}

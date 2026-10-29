@@ -166,6 +166,78 @@ def build_parser() -> argparse.ArgumentParser:
     )
     v.add_argument("model_dir", help="project directory containing final_outputs/")
 
+    r = sub.add_parser(
+        "refpkg",
+        help="build a pplacer reference package from any set of sequences",
+        description=(
+            "Align sequences with MUSCLE 5, build a FastTree tree, and package both\n"
+            "with taxit. Independent of `build`: use any sequences, at any time."
+        ),
+        epilog=(
+            "examples:\n"
+            "  rockabye refpkg positives/ -o phylo/ --name nirk -t 16\n"
+            "  rockabye refpkg positives/ negatives/ -o phylo/ --name both\n"
+            "  rockabye refpkg --alignment curated.afa -o phylo/ --name nirk"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    r.add_argument(
+        "sequences", nargs="*",
+        help="FASTA files and/or directories of them (nucleotide or protein, not mixed)",
+    )
+    r.add_argument("-o", "--output", required=True, help="directory to write source/ and reference_package/ into")
+    r.add_argument("--name", default="reference", help="package is written as <name>.refpkg (default: %(default)s)")
+    r.add_argument("--locus", default="placeholder", help="taxit locus label (default: %(default)s, as ROCkOut)")
+    r.add_argument(
+        "--alignment", default=None,
+        help="use this aligned FASTA instead of running MUSCLE; sequences are then optional",
+    )
+    r.add_argument("-t", "--threads", type=int, default=1)
+    r.add_argument("--muscle", default=None, help="path to MUSCLE 5")
+    r.add_argument("--fasttree", default=None, help="path to FastTree")
+    r.add_argument("--taxit", default=None, help="path to taxit")
+    r.add_argument("--force", action="store_true", help="replace an existing package of the same name")
+    r.add_argument("-q", "--quiet", action="store_true")
+
+    pl = sub.add_parser(
+        "place",
+        help="place reads onto a reference package with pplacer",
+        description=(
+            "Add reads to the package's reference alignment with mafft, place them\n"
+            "with pplacer, and tabulate with guppy to_csv. One output set per reads file."
+        ),
+        epilog=(
+            "examples:\n"
+            "  rockabye place -c phylo/reference_package/nirk.refpkg reads.fasta -o out/ -t 16\n"
+            "  rockabye place -c nirk.refpkg filter_dir/ROCkOut_passing_read_fastas/ -o out/\n"
+            "  rockabye place -c nirk.refpkg a.fasta b.fasta -o out/ -p 5"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pl.add_argument("-c", "--refpkg", required=True, help="reference package directory (*.refpkg)")
+    pl.add_argument("reads", nargs="+", help="reads FASTA files and/or directories of them")
+    pl.add_argument("-o", "--output", required=True, help="output directory")
+    pl.add_argument(
+        "-p", "--keep-at-most", type=int, default=1,
+        help="placements kept per read (default: %(default)s, as ROCkOut)",
+    )
+    pl.add_argument(
+        "--mafft-mode", choices=("fragments", "add"), default="fragments",
+        help=(
+            "fragments (default): mafft --addfragments --adjustdirection, which "
+            "aligns reads as fragments and reverse-complements those on the "
+            "opposite strand. add: ROCkOut's plain --add. On real nirK reads "
+            "fragments put 77%% of reads on their source gene's edge versus 32%% "
+            "for add, at ~7x the mafft time"
+        ),
+    )
+    pl.add_argument("-t", "--threads", type=int, default=1)
+    pl.add_argument("--mafft", default=None, help="path to mafft")
+    pl.add_argument("--pplacer", default=None, help="path to pplacer")
+    pl.add_argument("--guppy", default=None, help="path to guppy")
+    pl.add_argument("--force", action="store_true", help="overwrite existing placements")
+    pl.add_argument("-q", "--quiet", action="store_true")
+
     return p
 
 
@@ -479,6 +551,46 @@ def _validate_curve(path: str, xname: str, contiguous: bool, ma_width: int):
     return True, read_lengths
 
 
+def cmd_refpkg(args) -> int:
+    from .placement import build_refpkg
+
+    if not args.sequences and args.alignment is None:
+        raise ValueError("supply sequences to align, or an existing --alignment")
+    log = _log(not args.quiet)
+    res = build_refpkg(
+        args.sequences, args.output,
+        name=args.name, locus=args.locus, alignment=args.alignment,
+        threads=args.threads, force=args.force,
+        muscle=args.muscle, fasttree=args.fasttree, taxit=args.taxit,
+        log=log,
+    )
+    print(
+        f"\nReference package written to {res.package}\n"
+        f"  {res.n_sequences} {res.molecule} sequences x {res.n_columns} alignment columns"
+    )
+    print("\nPlace reads onto it with:")
+    print(f"  rockabye place -c {res.package} <reads.fasta> -o <placement_dir>")
+    return 0
+
+
+def cmd_place(args) -> int:
+    from .placement import place_reads
+
+    if args.keep_at_most < 1:
+        raise ValueError("--keep-at-most must be at least 1")
+    log = _log(not args.quiet)
+    results = place_reads(
+        args.refpkg, args.reads, args.output,
+        threads=args.threads, keep_at_most=args.keep_at_most,
+        mafft_mode=args.mafft_mode, force=args.force,
+        mafft=args.mafft, pplacer=args.pplacer, guppy=args.guppy,
+        log=log,
+    )
+    for r in results:
+        print(f"{r.n_reads:>9,} reads -> {r.n_rows:>9,} placements  {r.tsv}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -487,6 +599,10 @@ def main(argv=None) -> int:
             return cmd_build(args)
         if args.command == "validate":
             return cmd_validate(args)
+        if args.command == "refpkg":
+            return cmd_refpkg(args)
+        if args.command == "place":
+            return cmd_place(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
